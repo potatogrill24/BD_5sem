@@ -1,0 +1,129 @@
+CREATE TABLE Бронь (
+    id BIGSERIAL PRIMARY KEY,
+    id_клиента BIGINT REFERENCES Клиент(id),
+    id_компьютера BIGINT REFERENCES Компьютер(id),
+    Время_брони TIMESTAMP NOT NULL,
+    Длительность INT NOT NULL,
+    Продление BOOLEAN
+);
+
+def book_computer():
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # Получаем список доступных компьютеров
+        cursor.execute("SELECT id, Сборка FROM Компьютер WHERE Наличие_брони = FALSE")
+        computers = cursor.fetchall()
+
+        if computers:
+            # Преобразуем данные для отображения
+            computer_options = {f"Компьютер {comp[0]} (Сборка: {comp[1]})": comp[0] for comp in computers}
+
+            # Инициализируем состояние на уровне функции
+            if "selected_computer" not in st.session_state:
+                st.session_state["selected_computer"] = list(computer_options.keys())[0]
+            if "selected_time" not in st.session_state:
+                st.session_state["selected_time"] = None
+            if "selected_duration" not in st.session_state:
+                st.session_state["selected_duration"] = None
+
+            # Выпадающий список для выбора компьютера
+            selected_computer = st.selectbox(
+                "Выберите компьютер для бронирования:",
+                options=list(computer_options.keys()),
+                key="selectbox_computer"
+            )
+            st.session_state["selected_computer"] = selected_computer
+
+            # Выбор времени начала
+            selected_time = st.time_input(
+                "Выберите время начала брони:",
+                key="time_input"
+            )
+            st.session_state["selected_time"] = selected_time
+
+            # Выбор длительности
+            selected_duration = st.number_input(
+                "Введите длительность брони (в минутах):",
+                min_value=30,
+                step=30,
+                key="duration_input"
+            )
+            st.session_state["selected_duration"] = selected_duration
+
+            # Кнопка для выхода из режима просмотра
+            if st.button("Назад", key="back_book"):
+                reset_booking_session()
+
+            # Кнопка подтверждения бронирования
+            if st.button("Подтвердить бронирование", key="confirm_booking"):
+                if not (st.session_state["selected_time"] and st.session_state["selected_duration"]):
+                    st.error("Пожалуйста, укажите время начала и длительность брони.")
+                else:
+                    computer_id = computer_options[st.session_state["selected_computer"]]
+                    start_time = datetime.combine(datetime.today(), st.session_state["selected_time"])
+                    duration = st.session_state["selected_duration"]
+                    book_computer_by_id(computer_id, start_time, duration)
+        else:
+            st.write("Нет доступных компьютеров.")
+    except Exception as e:
+        st.error(f"Ошибка при получении доступных компьютеров: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def book_computer_by_id(computer_id, start_time, duration):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        client_login = st.session_state["login"]
+        cursor.execute("SELECT * FROM Клиент WHERE Логин = %s", (client_login,))
+        client_id = cursor.fetchone()
+
+        client_id = client_id[0]
+
+        # cursor.execute("SELECT * from Бронь WHERE id_клиента = %s", (client_id,))
+        # book = cursor.fetchone()
+        # if (book and client_id == book[1]):
+        #     st.error("Вы уже забронировали один компьютер.")
+        #     reset_booking_session()
+        #     return
+
+        cursor.execute(
+            """
+            INSERT INTO Бронь (id_клиента, id_компьютера, Время_брони, Длительность, Продление)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (client_id, computer_id, start_time, duration, False)
+        )
+
+        conn.commit()
+        st.success(f"Компьютер {computer_id} успешно забронирован!")
+        # Сбрасываем состояние бронирования
+        reset_booking_session()
+    except Exception as e:
+        st.error(f"Ошибка при бронировании компьютера: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+-- Создание триггерной функции для обновления статуса компьютера
+CREATE OR REPLACE FUNCTION update_computer_status()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE Компьютер
+    SET Наличие_брони = TRUE
+    WHERE id = NEW.id_компьютера;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Создание триггера, который срабатывает после вставки в таблицу Бронь
+CREATE TRIGGER set_computer_booked
+AFTER INSERT ON Бронь
+FOR EACH ROW
+EXECUTE FUNCTION update_computer_status();
+
+
+
